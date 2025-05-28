@@ -3,8 +3,10 @@
 Raspberry Pi MAX7219 スクロール株価表示
   - luma.led_matrix (MAX7219) で 8x8 マトリクスにテキストをスクロール
   - yfinance で株価取得、自前の TTL キャッシュ
-  - 設定は Config クラスに集約
-  - シンボル→社名マッピング対応
+  - Config クラスに設定集約、社名マッピング対応
+  - 銘柄名は美咲フォント、株価数字は CP437 フォントで混在表示
+  - 株価数字を 1 ドット下にオフセット、末尾の空白で見切れ防止
+  - ".T" で終わるコードは3000円以下:小数1位、3001円以上:整数表示
 """
 
 import time
@@ -19,45 +21,51 @@ from luma.led_matrix.device import max7219
 from luma.core.render import canvas
 from luma.core.virtual import viewport
 from luma.core.bitmap_font import load
+# レガシーフォント用
+from luma.core.legacy import text as legacy_text
+from luma.core.legacy.font import proportional, CP437_FONT
 
 
 class Config:
     # 表示するティッカーシンボル／コード一覧
-    STOCK_CODES: List[str] = [
-        "AAPL",
-        "NVDA",
-        "7011.T",
-        "8058.T",
-        "9104.T",
-        "7203.T",
-        "6758.T",
-        "9984.T"
-    ]
+STOCK_CODES: List[str] = [
+    "AAPL",
+    "NVDA",
+    "TSLA",
+    "7203.T",
+    "6758.T",
+    "9984.T",
+    "2914.T",
+    "7011.T",
+    "8058.T",
+    "9104.T"
+]
 
     # カスタム社名マッピング: シンボル → 表示社名
-    # マッピング型で用意された場合はここを優先
-    COMPANY_NAMES: Dict[str, str] = {
-        "AAPL": "Ａｐｐｌｅ",
-        "NVDA": "ＮＶＩＤＩＡ",
-        "7011.T": "三菱重工",
-        "8058.T": "三菱商事",
-        "9104.T": "商船三井",
-        "7203.T": "トヨタ",
-        "6758.T": "ＳＯＮＹ",
-        "9984.T": "ソフトバンクＧ"
-        # 以下、必要に応じて追加してください
-    }
+COMPANY_NAMES: Dict[str, str] = {
+    "AAPL":    "Ａｐｐｌｅ",
+    "NVDA":    "ＮＶＩＤＩＡ",
+    "TSLA":    "Ｔｅｓｌａ",
+    "7203.T":  "トヨタ",
+    "6758.T":  "ＳＯＮＹ",
+    "9984.T":  "ソフトバンクＧ",
+    "2914.T":  "ＪＴ",
+    "7011.T":  "三菱重工",
+    "8058.T":  "三菱商事",
+    "9104.T":  "商船三井"
+}
 
     CACHE_TTL: int = 160           # キャッシュ有効期間（秒）
     SPI_PORT: int = 0
     SPI_DEVICE: int = 0
-    CASCADED: int = 8
+    CASCADED: int = 8              # LEDドットマトリクス基板1個だけなら 4 にする
     BLOCK_ORIENTATION: int = -90
     ROTATE: int = 2
     REVERSE_ORDER: bool = False
-    CONTRAST: int = 1
-    SCROLL_SPEED: float = 0.1     # スクロール間隔（秒）
+    CONTRAST: int = 1              # 明るさ (大きくするとより明るくなる）
+    SCROLL_SPEED: float = 0.05     # スクロール間隔（秒) 大きくすると遅くなる
     FONT_PATH: str = "misaki_gothic.bmf"
+    LEGACY_FONT = proportional(CP437_FONT)
 
 
 class StockFetcher:
@@ -97,42 +105,65 @@ class LEDDisplay:
         )
         self.device.contrast(cfg.CONTRAST)
         self.font = load(cfg.FONT_PATH)
+        self.legacy_font = cfg.LEGACY_FONT
         self.speed = cfg.SCROLL_SPEED
 
-    def scroll_text(self, message: str):
-        msg_w, _ = self.font.getsize(message)
-        virt = viewport(self.device,
-                        width=msg_w + self.device.width,
-                        height=self.device.height)
+    def scroll_entries(self, entries: List[Tuple[str, str]]):
+        char_w = 6
+        blank_name_price = 2
+        blank_entry = 3
+        suffix_blanks = (self.device.width // char_w) + 1
+        total_chars = sum(
+            len(name) + blank_name_price + len(price) + blank_entry
+            for name, price in entries
+        ) + suffix_blanks
+        msg_w = total_chars * char_w
+
+        virt = viewport(
+            self.device,
+            width=msg_w + self.device.width,
+            height=self.device.height
+        )
         with canvas(virt) as draw:
-            draw.text((self.device.width, 0), message, fill="white", font=self.font)
-        for x in range(msg_w + 1):
-            virt.set_position((x, 0))
+            x = self.device.width
+            for name, price in entries:
+                draw.text((x, 0), name, fill="white", font=self.font)
+                x += len(name) * char_w
+                x += blank_name_price * char_w
+                legacy_text(draw, (x, 1), price, fill="white", font=self.legacy_font)
+                x += len(price) * char_w
+                x += blank_entry * char_w
+
+        for pos in range(msg_w + 1):
+            virt.set_position((pos, 0))
             time.sleep(self.speed)
 
 
 def clean_name(name: str) -> str:
-    # 法人表記除去
     pattern = r'\b(?:Corporation|Co|Holdings|Inc|LTD|CORP|MOTOR|GROUP)\b\.?'
     return re.sub(pattern, '', name, flags=re.IGNORECASE).strip()
 
 
-def build_message(codes: List[str], fetcher: StockFetcher) -> str:
-    entries: List[str] = []
+def build_entries(codes: List[str], fetcher: StockFetcher) -> List[Tuple[str, str]]:
+    entries: List[Tuple[str, str]] = []
     for code in codes:
-        # カスタムマッピングがあればそちらを優先
-        if code in Config.COMPANY_NAMES:
-            name = Config.COMPANY_NAMES[code]
-        else:
-            raw = fetcher.tickers[code].info.get("shortName", code)
-            name = clean_name(raw)
-
+        name = Config.COMPANY_NAMES.get(
+            code,
+            clean_name(fetcher.tickers[code].info.get("shortName", code))
+        )
         price = fetcher.fetch_price(code)
-        entries.append(f" {name}:{price:.2f}  " if price else f"{name} Err")
-
-    prefix = " " * 8
-    suffix = " " * 20
-    return prefix + " ".join(entries) + suffix
+        if price is None:
+            price_str = "Err"
+        else:
+            if code.endswith('.T'): #東証銘柄の呼値単位処理
+                if price <= 3000:
+                    price_str = f"{price:.1f}"
+                else:
+                    price_str = f"{int(price)}"
+            else:
+                price_str = f"{price:.2f}"
+        entries.append((name, price_str))
+    return entries
 
 
 def parse_args():
@@ -158,8 +189,8 @@ def main():
 
     try:
         while True:
-            msg = build_message(codes, fetcher)
-            display.scroll_text(msg)
+            entries = build_entries(codes, fetcher)
+            display.scroll_entries(entries)
             time.sleep(1)
     except KeyboardInterrupt:
         logging.info("ユーザーによる中断で終了")
@@ -167,4 +198,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
