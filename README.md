@@ -2,6 +2,12 @@
 
 Raspberry Pi に MAX7219 搭載の LED マトリックスパネルを接続し、株価の（簡易）ティッカーボードを実装します。
 
+
+
+https://github.com/user-attachments/assets/e1aaa651-0fee-4e85-a2a0-5173b3088bcc
+
+
+
 LED ドットマトリックスパネルは、8×8 ドットのマトリックスが 4 枚並んだボードで、ネット通販等で千円程度で比較的安価に入手可能です。
 
 Python からは [luma.led_matrix](https://luma-led-matrix.readthedocs.io/en/latest/install.html) ライブラリを利用します。  
@@ -22,7 +28,10 @@ Raspberry Pi の設定やパネルとの接続方法は、上記ドキュメン�
 ## 前提条件
 
 - インターネット接続されたRaspberry Pi（GPIO／SPI が使えるモデル）  
-- MAX7219 搭載 LED ドットマトリクスパネル（8×8 ドット ×4）  
+- MAX7219 搭載 LED ドットマトリクスパネル（8×8 ドット ×4）
+
+  <picture> <img width=30% src="https://github.com/user-attachments/assets/b7f07664-90d6-428e-83f7-1167e926df8a"> </picture>
+
 - Python 3.x  
 - Python ライブラリ  
 
